@@ -323,3 +323,206 @@ begin
   end if;
 end;
 $$;
+
+-- =========================================================================
+-- 11. RPC ĐỂ TỐI ƯU HÓA QUÁ TRÌNH KHỞI TẠO PHÒNG CƯỢC MỚI (ATOMIC & HIGH-PERFORMANCE)
+-- =========================================================================
+-- Hướng dẫn: Chạy khối lệnh dưới đây trên SQL Editor của Supabase để khởi tạo hàm RPC.
+-- Hàm này gộp 5 requests HTTP tuần tự của client thành 1 transaction duy nhất ở server-side.
+create or replace function public.create_room_transaction(
+  p_name text,
+  p_is_private boolean,
+  p_max_players int,
+  p_min_bet bigint,
+  p_max_bet bigint,
+  p_bet_duration int,
+  p_room_code text
+)
+returns json
+language plpgsql
+security definer -- Thực thi dưới quyền đặc quyền của hệ thống để vượt qua các RLS policy
+as $$
+declare
+  v_user_id uuid;
+  v_room record;
+  v_round record;
+begin
+  -- 1. Xác thực tài khoản người dùng
+  v_user_id := auth.uid();
+  if v_user_id is null then
+    raise exception 'Người dùng chưa đăng nhập hệ thống';
+  end if;
+
+  -- 2. Thêm phòng chơi vào bảng rooms
+  insert into public.rooms (
+    name,
+    code,
+    is_private,
+    max_players,
+    min_bet,
+    max_bet,
+    bet_duration,
+    created_by,
+    status
+  )
+  values (
+    p_name,
+    p_room_code,
+    p_is_private,
+    p_max_players,
+    p_min_bet,
+    p_max_bet,
+    p_bet_duration,
+    v_user_id,
+    'waiting'
+  )
+  returning * into v_room;
+
+  -- 3. Đăng ký chủ phòng làm Host vào room_players
+  insert into public.room_players (
+    room_id,
+    user_id,
+    is_host,
+    is_online
+  )
+  values (
+    v_room.id,
+    v_user_id,
+    true,
+    true
+  );
+
+  -- 4. Tạo ván đấu đầu tiên (rounds)
+  insert into public.rounds (
+    room_id,
+    phase,
+    status,
+    phase_ends_at
+  )
+  values (
+    v_room.id,
+    'waiting',
+    'active',
+    now() + interval '1 hour'
+  )
+  returning * into v_round;
+
+  -- 5. Liên kết current_round_id vào rooms
+  update public.rooms
+  set current_round_id = v_round.id
+  where id = v_room.id;
+
+  -- Trả về JSON khớp với cấu trúc Room của Client
+  return json_build_object(
+    'id', v_room.id,
+    'name', v_room.name,
+    'code', v_room.code,
+    'is_private', v_room.is_private,
+    'max_players', v_room.max_players,
+    'min_bet', v_room.min_bet,
+    'max_bet', v_room.max_bet,
+    'bet_duration', v_room.bet_duration,
+    'status', v_room.status,
+    'created_by', v_room.created_by,
+    'current_round_id', v_round.id,
+    'created_at', to_char(v_room.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+  );
+end;
+$$;
+
+-- =========================================================================
+-- 12. HƯỚNG DẪN BẮT BUỘC: KÍCH HOẠT REALTIME CHO TOÀN BỘ BẢNG TRONG BẦU CUA ONLINE
+-- =========================================================================
+-- Chạy khối lệnh dưới đây trên SQL Editor của Supabase để bật đồng bộ Realtime.
+-- Nếu không chạy khối lệnh này, các sự kiện đổi ván đấu, chat, đặt cược, ví sẽ KHÔNG đồng bộ về client.
+do $$
+begin
+  if not exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
+    create publication supabase_realtime;
+  end if;
+end;
+$$;
+
+-- Thiết lập danh sách bảng tham gia Realtime (SET TABLE ghi đè an toàn, tránh lỗi trùng lặp)
+alter publication supabase_realtime set table 
+  public.rooms, 
+  public.rounds, 
+  public.room_players, 
+  public.bets, 
+  public.chat_messages, 
+  public.wallets;
+
+-- =========================================================================
+-- 13. RPC ĐỂ BẮT ĐẦU VÁN ĐẤU MỚI (ATOMIC & HIGH-PERFORMANCE)
+-- =========================================================================
+-- Hướng dẫn: Chạy khối lệnh dưới đây trên SQL Editor của Supabase để tạo hàm start_new_round.
+-- Hàm này giải quyết triệt để lỗi phân quyền (RLS) khi cập nhật phòng cược và tăng tốc độ chuyển ván.
+create or replace function public.start_new_round(
+  p_room_id uuid,
+  p_bet_duration int
+)
+returns json
+language plpgsql
+security definer -- Khởi chạy dưới quyền hệ thống để vượt qua các RLS policy
+as $$
+declare
+  v_user_id uuid;
+  v_is_host boolean;
+  v_new_round record;
+  v_phase_ends_at timestamptz;
+begin
+  -- 1. Xác thực người dùng hiện tại
+  v_user_id := auth.uid();
+  if v_user_id is null then
+    raise exception 'Người dùng chưa đăng nhập hệ thống';
+  end if;
+
+  -- 2. Kiểm tra xem người dùng có phải là Host hoặc chủ phòng chơi không
+  select is_host into v_is_host 
+  from public.room_players 
+  where room_id = p_room_id and user_id = v_user_id;
+
+  if not found or v_is_host is not true then
+    if not exists (select 1 from public.rooms where id = p_room_id and created_by = v_user_id) then
+      raise exception 'Quyền truy cập bị từ chối: Chỉ có Host mới có thể bắt đầu ván mới';
+    end if;
+  end if;
+
+  -- Tính thời gian kết thúc phase đặt cược mới
+  v_phase_ends_at := now() + (p_bet_duration || ' seconds')::interval;
+
+  -- 3. Tạo ván cược mới ở trạng thái 'betting'
+  insert into public.rounds (
+    room_id,
+    phase,
+    status,
+    phase_started_at,
+    phase_ends_at
+  )
+  values (
+    p_room_id,
+    'betting',
+    'active',
+    now(),
+    v_phase_ends_at
+  )
+  returning * into v_new_round;
+
+  -- 4. Cập nhật trạng thái và current_round_id trong bảng rooms
+  update public.rooms
+  set status = 'playing',
+      current_round_id = v_new_round.id
+  where id = p_room_id;
+
+  -- Trả về JSON ván đấu mới khớp cấu trúc Client mong đợi
+  return json_build_object(
+    'id', v_new_round.id,
+    'room_id', v_new_round.room_id,
+    'phase', v_new_round.phase,
+    'status', v_new_round.status,
+    'phase_started_at', to_char(v_new_round.phase_started_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+    'phase_ends_at', to_char(v_new_round.phase_ends_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+    'created_at', to_char(v_new_round.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+  );
+end;
+$$;

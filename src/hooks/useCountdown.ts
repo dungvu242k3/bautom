@@ -1,6 +1,10 @@
 import { useState, useEffect } from 'react';
 
-export const useCountdown = (endsAtIso: string | undefined, onTimeUp?: () => void) => {
+export const useCountdown = (
+  endsAtIso: string | undefined,
+  startedAtIso: string | undefined,
+  onTimeUp?: () => void
+) => {
   const [timeLeft, setTimeLeft] = useState<number>(0);
 
   useEffect(() => {
@@ -9,13 +13,25 @@ export const useCountdown = (endsAtIso: string | undefined, onTimeUp?: () => voi
       return;
     }
 
+    let timer: any = null;
+
+    // 1. Tính toán độ lệch đồng hồ (clock desync offset) giữa client và server
+    // Giả định thời gian truyền tin qua mạng cực nhỏ, nên tại thời điểm nhận được payload:
+    // Thời gian server = startedAtIso.
+    // Thời gian client hiện tại = Date.now().
+    const serverStart = startedAtIso ? new Date(startedAtIso).getTime() : Date.now();
+    const clientArrival = Date.now();
+    const clockDesyncOffset = clientArrival - serverStart;
+
     const calculateTimeLeft = () => {
-      const difference = new Date(endsAtIso).getTime() - Date.now();
-      const secondsLeft = Math.max(0, Math.floor(difference / 1000));
+      // 2. Sử dụng clockDesyncOffset để hiệu chỉnh thời gian client hiện tại khớp với server
+      const adjustedClientNow = Date.now() - clockDesyncOffset;
+      const difference = new Date(endsAtIso).getTime() - adjustedClientNow;
+      const secondsLeft = Math.max(0, Math.round(difference / 1000)); // Dùng Math.round để tránh hiển thị lệch giây
       setTimeLeft(secondsLeft);
       
       if (secondsLeft <= 0) {
-        clearInterval(timer);
+        if (timer) clearInterval(timer);
         if (onTimeUp) onTimeUp();
       }
     };
@@ -23,10 +39,12 @@ export const useCountdown = (endsAtIso: string | undefined, onTimeUp?: () => voi
     // Tính toán ngay lập tức khi endsAt thay đổi
     calculateTimeLeft();
 
-    const timer = setInterval(calculateTimeLeft, 1000);
+    timer = setInterval(calculateTimeLeft, 1000);
 
-    return () => clearInterval(timer);
-  }, [endsAtIso]);
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [endsAtIso, startedAtIso]);
 
   return timeLeft;
 };

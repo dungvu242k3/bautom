@@ -2,7 +2,7 @@ import { supabase } from './supabaseClient';
 import { Room, RoomPlayer } from '@/types/game.types';
 
 export const roomService = {
-  // 1. Tạo phòng chơi mới
+  // 1. Tạo phòng chơi mới sử dụng Database RPC Transaction cực nhanh và an toàn
   async createRoom(
     name: string,
     isPrivate: boolean,
@@ -11,8 +11,7 @@ export const roomService = {
     maxBet: number,
     betDuration: number = 15
   ): Promise<Room> {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) throw new Error('Chưa đăng nhập');
+    console.log('[roomService.createRoom] Khởi tạo phòng cược bằng RPC:', { name, isPrivate, maxPlayers, minBet, maxBet, betDuration });
 
     // Tạo mã phòng 6 chữ số ngẫu nhiên nếu là phòng private
     let roomCode = null;
@@ -20,66 +19,34 @@ export const roomService = {
       roomCode = Math.random().toString(36).substring(2, 8).toUpperCase();
     }
 
-    // 1. Insert phòng vào database
-    const { data: room, error: roomErr } = await supabase
-      .from('rooms')
-      .insert({
-        name,
-        code: roomCode,
-        is_private: isPrivate,
-        max_players: maxPlayers,
-        min_bet: minBet,
-        max_bet: maxBet,
-        bet_duration: betDuration,
-        created_by: user.id,
-        status: 'waiting'
-      })
-      .select()
-      .single();
+    const { data, error } = await supabase.rpc('create_room_transaction', {
+      p_name: name,
+      p_is_private: isPrivate,
+      p_max_players: maxPlayers,
+      p_min_bet: minBet,
+      p_max_bet: maxBet,
+      p_bet_duration: betDuration,
+      p_room_code: roomCode
+    });
 
-    if (roomErr) throw roomErr;
+    if (error) {
+      console.error('[roomService.createRoom] LỖI tạo phòng qua RPC:', error);
+      throw error;
+    }
 
-    // 2. Tự động thêm người tạo phòng làm Host
-    const { error: playerErr } = await supabase
-      .from('room_players')
-      .insert({
-        room_id: room.id,
-        user_id: user.id,
-        is_host: true,
-        is_online: true
-      });
-
-    if (playerErr) throw playerErr;
-
-    // 3. Tự động tạo ván chơi đầu tiên (Round 1 ở trạng thái waiting)
-    const { data: round, error: roundErr } = await supabase
-      .from('rounds')
-      .insert({
-        room_id: room.id,
-        phase: 'waiting',
-        status: 'active',
-        phase_ends_at: new Date(Date.now() + 3600 * 1000).toISOString() // Đặt xa để chờ bắt đầu
-      })
-      .select()
-      .single();
-
-    if (roundErr) throw roundErr;
-
-    // Cập nhật lại current_round_id trong bảng rooms
-    await supabase
-      .from('rooms')
-      .update({ current_round_id: round.id })
-      .eq('id', room.id);
-
-    return { ...room, current_round_id: round.id } as Room;
+    console.log('[roomService.createRoom] Tạo phòng qua RPC thành công:', data);
+    return data as Room;
   },
 
   // 2. Tham gia phòng chơi public/private bằng ID hoặc mã phòng
   async joinRoom(roomIdOrCode: string): Promise<Room> {
+    console.log('[roomService.joinRoom] Bắt đầu tham gia phòng:', roomIdOrCode);
     const { data: { user } } = await supabase.auth.getUser();
+    console.log('[roomService.joinRoom] Bước 1 - Đã lấy user:', user?.id);
     if (!user) throw new Error('Chưa đăng nhập');
 
     // Tìm phòng qua Code hoặc ID
+    console.log('[roomService.joinRoom] Bước 2 - Đang truy vấn phòng từ DB...');
     let query = supabase.from('rooms').select('*');
     if (roomIdOrCode.length === 6) {
       query = query.eq('code', roomIdOrCode.toUpperCase());
@@ -88,20 +55,30 @@ export const roomService = {
     }
 
     const { data: room, error: roomFindErr } = await query.single();
-    if (roomFindErr || !room) throw new Error('Không tìm thấy phòng chơi yêu cầu');
+    if (roomFindErr || !room) {
+      console.error('[roomService.joinRoom] LỖI không tìm thấy phòng:', roomFindErr);
+      throw new Error('Không tìm thấy phòng chơi yêu cầu');
+    }
+    console.log('[roomService.joinRoom] Đã tìm thấy phòng:', room);
 
     // Đếm số người hiện tại trong phòng
+    console.log('[roomService.joinRoom] Bước 3 - Đang đếm số người chơi hiện tại...');
     const { count, error: countErr } = await supabase
       .from('room_players')
       .select('*', { count: 'exact', head: true })
       .eq('room_id', room.id);
 
-    if (countErr) throw countErr;
+    if (countErr) {
+      console.error('[roomService.joinRoom] LỖI đếm số người chơi:', countErr);
+      throw countErr;
+    }
+    console.log('[roomService.joinRoom] Số người chơi hiện tại:', count);
     if (count && count >= room.max_players) {
       throw new Error('Phòng cược đã đầy người chơi');
     }
 
     // Insert người chơi mới vào phòng cược
+    console.log('[roomService.joinRoom] Bước 4 - Đang đăng ký người chơi vào bảng room_players...');
     const { error: joinErr } = await supabase
       .from('room_players')
       .upsert({
@@ -111,13 +88,18 @@ export const roomService = {
         is_online: true
       }, { onConflict: 'room_id,user_id' });
 
-    if (joinErr) throw joinErr;
+    if (joinErr) {
+      console.error('[roomService.joinRoom] LỖI đăng ký phòng chơi:', joinErr);
+      throw joinErr;
+    }
+    console.log('[roomService.joinRoom] Đã tham gia phòng thành công!');
 
     return room as Room;
   },
 
   // 3. Rời phòng chơi
   async leaveRoom(roomId: string): Promise<void> {
+    console.log('[roomService.leaveRoom] Đang rời phòng chơi:', roomId);
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
 
@@ -128,7 +110,11 @@ export const roomService = {
       .eq('room_id', roomId)
       .eq('user_id', user.id);
 
-    if (leaveErr) throw leaveErr;
+    if (leaveErr) {
+      console.error('[roomService.leaveRoom] LỖI khi rời phòng:', leaveErr);
+      throw leaveErr;
+    }
+    console.log('[roomService.leaveRoom] Đã rút người chơi khỏi phòng!');
 
     // 2. Nếu phòng không còn ai, ta xóa phòng để tránh rác DB
     const { count } = await supabase
@@ -137,6 +123,7 @@ export const roomService = {
       .eq('room_id', roomId);
 
     if (count === 0) {
+      console.log('[roomService.leaveRoom] Phòng trống không còn ai, đang xóa phòng...');
       await supabase.from('rooms').delete().eq('id', roomId);
     }
   },
@@ -156,43 +143,67 @@ export const roomService = {
 
   // 5. Lấy thông tin phòng và người chơi
   async getRoomDetails(roomId: string): Promise<{ room: Room; players: RoomPlayer[] }> {
+    console.log('[roomService.getRoomDetails] Bắt đầu nạp thông tin chi tiết phòng:', roomId);
+    
     const { data: room, error: roomErr } = await supabase
       .from('rooms')
       .select('*')
       .eq('id', roomId)
       .single();
 
-    if (roomErr) throw roomErr;
+    if (roomErr) {
+      console.error('[roomService.getRoomDetails] LỖI lấy rooms:', roomErr);
+      throw roomErr;
+    }
+    console.log('[roomService.getRoomDetails] Lấy thông tin phòng thành công:', room);
 
-    // Lấy thông tin người chơi kèm display_name từ profiles
+    // Lấy danh sách người chơi thô trong phòng trước
+    console.log('[roomService.getRoomDetails] Đang lấy danh sách người chơi room_players...');
     const { data: playersData, error: playersErr } = await supabase
       .from('room_players')
-      .select(`
-        id,
-        room_id,
-        user_id,
-        is_host,
-        is_online,
-        joined_at,
-        profiles!room_players_user_id_fkey(display_name, avatar_url),
-        wallets!room_players_user_id_fkey(balance)
-      `)
+      .select('*')
       .eq('room_id', roomId);
 
-    if (playersErr) throw playersErr;
+    if (playersErr) {
+      console.error('[roomService.getRoomDetails] LỖI lấy room_players:', playersErr);
+      throw playersErr;
+    }
+    console.log('[roomService.getRoomDetails] Đã lấy room_players:', playersData?.length, 'players');
 
-    // Format lại dữ liệu nhận được dạng dẹt dễ dùng
-    const formattedPlayers = (playersData as any[]).map((p) => ({
-      id: p.id,
-      room_id: p.room_id,
-      user_id: p.user_id,
-      is_host: p.is_host,
-      is_online: p.is_online,
-      joined_at: p.joined_at,
-      display_name: p.profiles?.display_name || 'Người chơi',
-      avatar_url: p.profiles?.avatar_url || null,
-      balance: p.wallets?.balance || 0
-    }));
+    let formattedPlayers: RoomPlayer[] = [];
+
+    if (playersData && playersData.length > 0) {
+      const userIds = playersData.map((p) => p.user_id);
+
+      // Lấy thông tin profiles song song cực nhanh bằng query IN để tránh N+1
+      console.log('[roomService.getRoomDetails] Đang lấy profiles và wallets tương ứng...');
+      const [profilesRes, walletsRes] = await Promise.all([
+        supabase.from('profiles').select('user_id, display_name, avatar_url').in('user_id', userIds),
+        supabase.from('wallets').select('user_id, balance').in('user_id', userIds)
+      ]);
+
+      const profileMap = new Map((profilesRes.data || []).map((prof) => [prof.user_id, prof]));
+      const walletMap = new Map((walletsRes.data || []).map((w) => [w.user_id, w.balance]));
+
+      formattedPlayers = playersData.map((p) => {
+        const profileObj = profileMap.get(p.user_id);
+        const balanceVal = walletMap.get(p.user_id) || 0;
+
+        return {
+          id: p.id,
+          room_id: p.room_id,
+          user_id: p.user_id,
+          is_host: p.is_host,
+          is_online: p.is_online,
+          joined_at: p.joined_at,
+          display_name: profileObj?.display_name || 'Người chơi',
+          avatar_url: profileObj?.avatar_url || null,
+          balance: balanceVal
+        };
+      });
+    }
+
+    console.log('[roomService.getRoomDetails] Đã nạp thành công thông tin người chơi dẹt:', formattedPlayers);
 
     return {
       room: room as Room,

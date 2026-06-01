@@ -193,22 +193,31 @@ create policy "Cho phép xem thông tin user công khai" on public.users
 create policy "Cho phép cập nhật thông tin user chính mình" on public.users
   for update using (auth.uid() = id);
 
+create policy "Cho phép user tạo bản ghi cho chính mình" on public.users
+  for insert with check (auth.uid() = id);
+
 create policy "Cho phép xem profile công khai" on public.profiles
   for select using (true);
 
 create policy "Cho phép cập nhật profile chính mình" on public.profiles
   for update using (auth.uid() = user_id);
 
+create policy "Cho phép user tạo profile cho chính mình" on public.profiles
+  for insert with check (auth.uid() = user_id);
+
 -- B. Chính sách Ví Xu (Wallets) & Giao dịch (Coin Transactions) - CHỈ ĐỌC
 create policy "Cho phép người dùng xem ví cá nhân" on public.wallets
-  for select using (auth.uid() = user_id);
+  for select using (true);
+
+create policy "Cho phép user tạo ví cho chính mình" on public.wallets
+  for insert with check (auth.uid() = user_id);
 
 create policy "Cho phép người dùng xem lịch sử giao dịch cá nhân" on public.coin_transactions
   for select using (auth.uid() = user_id);
 
 -- C. Chính sách Phòng Chơi (Rooms) & Người chơi trong phòng (Room Players)
 create policy "Cho phép xem phòng chơi không ẩn" on public.rooms
-  for select using (is_private = false or exists (
+  for select using (is_private = false or created_by = auth.uid() or exists (
     select 1 from public.room_players where room_id = rooms.id and user_id = auth.uid()
   ));
 
@@ -224,12 +233,45 @@ create policy "Cho phép xem người chơi cùng phòng" on public.room_players
 create policy "Cho phép người dùng tự join hoặc rời phòng" on public.room_players
   for insert with check (auth.uid() = user_id);
 
+create policy "Cho phép người dùng tự cập nhật thông tin phòng chơi của mình" on public.room_players
+  for update using (auth.uid() = user_id);
+
 create policy "Cho phép người dùng rời phòng" on public.room_players
   for delete using (auth.uid() = user_id);
 
 -- D. Chính sách Vòng Chơi (Rounds) & Đặt Cược (Bets)
 create policy "Cho phép xem vòng chơi trong phòng đang trực tuyến" on public.rounds
   for select using (true);
+
+create policy "Cho phép chủ phòng/host tạo vòng chơi mới" on public.rounds
+  for insert with check (
+    exists (
+      select 1 from public.rooms
+      where rooms.id = rounds.room_id
+      and rooms.created_by = auth.uid()
+    )
+    or exists (
+      select 1 from public.room_players
+      where room_players.room_id = rounds.room_id
+      and room_players.user_id = auth.uid()
+      and room_players.is_host = true
+    )
+  );
+
+create policy "Cho phép chủ phòng/host cập nhật vòng chơi" on public.rounds
+  for update using (
+    exists (
+      select 1 from public.rooms
+      where rooms.id = rounds.room_id
+      and rooms.created_by = auth.uid()
+    )
+    or exists (
+      select 1 from public.room_players
+      where room_players.room_id = rounds.room_id
+      and room_players.user_id = auth.uid()
+      and room_players.is_host = true
+    )
+  );
 
 create policy "Cho phép người dùng xem cược của chính mình" on public.bets
   for select using (auth.uid() = user_id);
@@ -458,3 +500,197 @@ create index if not exists idx_rounds_room_id on public.rounds(room_id);
 create index if not exists idx_room_players_room_id on public.room_players(room_id);
 create index if not exists idx_chat_messages_room_id on public.chat_messages(room_id);
 create index if not exists idx_coin_transactions_user_id on public.coin_transactions(user_id);
+
+-- RPC 3: TẠO PHÒNG CHƠI MỚI (ATOMIC & HIGH-PERFORMANCE TRANSACTION)
+create or replace function public.create_room_transaction(
+  p_name text,
+  p_is_private boolean,
+  p_max_players int,
+  p_min_bet bigint,
+  p_max_bet bigint,
+  p_bet_duration int,
+  p_room_code text
+)
+returns json
+language plpgsql
+security definer -- Thực thi dưới quyền admin để thực hiện mọi thao tác ghi an toàn
+as $$
+declare
+  v_user_id uuid;
+  v_room record;
+  v_round record;
+begin
+  -- 1. Xác thực người dùng hiện tại qua auth.uid() của Supabase
+  v_user_id := auth.uid();
+  if v_user_id is null then
+    raise exception 'Người dùng chưa đăng nhập hệ thống';
+  end if;
+
+  -- 2. Khởi tạo phòng chơi mới
+  insert into public.rooms (
+    name,
+    code,
+    is_private,
+    max_players,
+    min_bet,
+    max_bet,
+    bet_duration,
+    created_by,
+    status
+  )
+  values (
+    p_name,
+    p_room_code,
+    p_is_private,
+    p_max_players,
+    p_min_bet,
+    p_max_bet,
+    p_bet_duration,
+    v_user_id,
+    'waiting'
+  )
+  returning * into v_room;
+
+  -- 3. Tự động thêm người tạo phòng làm Host
+  insert into public.room_players (
+    room_id,
+    user_id,
+    is_host,
+    is_online
+  )
+  values (
+    v_room.id,
+    v_user_id,
+    true,
+    true
+  );
+
+  -- 4. Tự động tạo ván chơi đầu tiên (rounds)
+  insert into public.rounds (
+    room_id,
+    phase,
+    status,
+    phase_ends_at
+  )
+  values (
+    v_room.id,
+    'waiting',
+    'active',
+    now() + interval '1 hour' -- Đặt xa để chờ bắt đầu ván
+  )
+  returning * into v_round;
+
+  -- 5. Cập nhật current_round_id trong bảng rooms
+  update public.rooms
+  set current_round_id = v_round.id
+  where id = v_room.id;
+
+  -- Trả về đối tượng JSON chứa đầy đủ thông tin phòng cùng current_round_id khớp cấu trúc client mong đợi
+  return json_build_object(
+    'id', v_room.id,
+    'name', v_room.name,
+    'code', v_room.code,
+    'is_private', v_room.is_private,
+    'max_players', v_room.max_players,
+    'min_bet', v_room.min_bet,
+    'max_bet', v_room.max_bet,
+    'bet_duration', v_room.bet_duration,
+    'status', v_room.status,
+    'created_by', v_room.created_by,
+    'current_round_id', v_round.id,
+    'created_at', to_char(v_room.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+  );
+end;
+$$;
+
+-- =========================================================================
+-- 7. KÍCH HOẠT REALTIME (REALTIME REPLICATION) CHO CÁC BẢNG CỐT LÕI
+-- =========================================================================
+-- Đảm bảo publication 'supabase_realtime' tồn tại
+do $$
+begin
+  if not exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
+    create publication supabase_realtime;
+  end if;
+end;
+$$;
+
+-- Thiết lập danh sách bảng tham gia Realtime (SET TABLE ghi đè an toàn, tránh lỗi trùng lặp)
+alter publication supabase_realtime set table 
+  public.rooms, 
+  public.rounds, 
+  public.room_players, 
+  public.bets, 
+  public.chat_messages, 
+  public.wallets;
+
+-- RPC 4: BẮT ĐẦU VÁN ĐẤU MỚI (ATOMIC & HIGH-PERFORMANCE TRANSACTION)
+create or replace function public.start_new_round(
+  p_room_id uuid,
+  p_bet_duration int
+)
+returns json
+language plpgsql
+security definer -- Khởi chạy dưới quyền hệ thống để vượt qua mọi kiểm tra RLS
+as $$
+declare
+  v_user_id uuid;
+  v_is_host boolean;
+  v_new_round record;
+  v_phase_ends_at timestamptz;
+begin
+  -- 1. Xác thực người dùng hiện tại
+  v_user_id := auth.uid();
+  if v_user_id is null then
+    raise exception 'Người dùng chưa đăng nhập hệ thống';
+  end if;
+
+  -- 2. Kiểm tra xem người dùng có phải là Host hoặc chủ phòng chơi không
+  select is_host into v_is_host 
+  from public.room_players 
+  where room_id = p_room_id and user_id = v_user_id;
+
+  if not found or v_is_host is not true then
+    if not exists (select 1 from public.rooms where id = p_room_id and created_by = v_user_id) then
+      raise exception 'Quyền truy cập bị từ chối: Chỉ có Host mới có thể bắt đầu ván mới';
+    end if;
+  end if;
+
+  -- Tính thời gian kết thúc phase đặt cược mới
+  v_phase_ends_at := now() + (p_bet_duration || ' seconds')::interval;
+
+  -- 3. Tạo ván cược mới ở trạng thái 'betting'
+  insert into public.rounds (
+    room_id,
+    phase,
+    status,
+    phase_started_at,
+    phase_ends_at
+  )
+  values (
+    p_room_id,
+    'betting',
+    'active',
+    now(),
+    v_phase_ends_at
+  )
+  returning * into v_new_round;
+
+  -- 4. Cập nhật trạng thái và current_round_id trong bảng rooms
+  update public.rooms
+  set status = 'playing',
+      current_round_id = v_new_round.id
+  where id = p_room_id;
+
+  -- Trả về JSON ván đấu mới khớp cấu trúc Client mong đợi
+  return json_build_object(
+    'id', v_new_round.id,
+    'room_id', v_new_round.room_id,
+    'phase', v_new_round.phase,
+    'status', v_new_round.status,
+    'phase_started_at', to_char(v_new_round.phase_started_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+    'phase_ends_at', to_char(v_new_round.phase_ends_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+    'created_at', to_char(v_new_round.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+  );
+end;
+$$;

@@ -35,33 +35,89 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   fetchUserData: async (userId) => {
     try {
       set({ loading: true, error: null });
+
+      // Lấy thông tin auth user để dùng khi cần tạo dữ liệu thiếu
+      const { data: { user: authUser } } = await supabase.auth.getUser();
       
-      // 1. Lấy thông tin user mở rộng
-      const { data: userData, error: userErr } = await supabase
+      // 1. Lấy thông tin user mở rộng (dùng maybeSingle để tránh lỗi 406)
+      let { data: userData, error: userErr } = await supabase
         .from('users')
         .select('*')
         .eq('id', userId)
-        .single();
+        .maybeSingle();
         
       if (userErr) throw userErr;
 
-      // 2. Lấy profile
-      const { data: profileData, error: profileErr } = await supabase
+      // Nếu user chưa tồn tại trong bảng public.users → tự tạo
+      if (!userData && authUser) {
+        const username = authUser.user_metadata?.username 
+          || authUser.email?.split('@')[0] 
+          || 'player';
+        const email = authUser.email || `${username}@bautom.local`;
+        
+        console.log('[authStore] Tự tạo row users cho:', userId, username);
+        const { data: newUser, error: insertErr } = await supabase
+          .from('users')
+          .insert({ id: userId, email, username })
+          .select()
+          .single();
+        
+        if (insertErr) {
+          console.error('[authStore] Lỗi tạo user:', insertErr);
+          throw insertErr;
+        }
+        userData = newUser;
+      }
+
+      // 2. Lấy profile (dùng maybeSingle)
+      let { data: profileData, error: profileErr } = await supabase
         .from('profiles')
         .select('*')
         .eq('user_id', userId)
-        .single();
+        .maybeSingle();
         
       if (profileErr) throw profileErr;
 
-      // 3. Lấy ví xu
-      const { data: walletData, error: walletErr } = await supabase
+      // Nếu profile chưa tồn tại → tự tạo
+      if (!profileData && userData) {
+        console.log('[authStore] Tự tạo row profiles cho:', userId);
+        const { data: newProfile, error: insertErr } = await supabase
+          .from('profiles')
+          .insert({ user_id: userId, display_name: userData.username })
+          .select()
+          .single();
+        
+        if (insertErr) {
+          console.error('[authStore] Lỗi tạo profile:', insertErr);
+          throw insertErr;
+        }
+        profileData = newProfile;
+      }
+
+      // 3. Lấy ví xu (dùng maybeSingle)
+      let { data: walletData, error: walletErr } = await supabase
         .from('wallets')
         .select('*')
         .eq('user_id', userId)
-        .single();
+        .maybeSingle();
         
       if (walletErr) throw walletErr;
+
+      // Nếu wallet chưa tồn tại → tự tạo với 1000 xu
+      if (!walletData) {
+        console.log('[authStore] Tự tạo row wallets cho:', userId);
+        const { data: newWallet, error: insertErr } = await supabase
+          .from('wallets')
+          .insert({ user_id: userId, balance: 1000 })
+          .select()
+          .single();
+        
+        if (insertErr) {
+          console.error('[authStore] Lỗi tạo wallet:', insertErr);
+          throw insertErr;
+        }
+        walletData = newWallet;
+      }
 
       set({
         user: userData as User,

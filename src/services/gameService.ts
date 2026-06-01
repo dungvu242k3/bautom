@@ -1,5 +1,5 @@
 import { supabase } from './supabaseClient';
-import { AnimalType } from '@/types/game.types';
+import { AnimalType, Round } from '@/types/game.types';
 
 export const gameService = {
   // 1. Đặt cược thông qua RPC an toàn trên database
@@ -34,36 +34,22 @@ export const gameService = {
     if (error) throw error;
   },
 
-  // 3. Host bắt đầu game hoặc bắt đầu vòng cược mới
-  async startNewRound(roomId: string, durationSeconds: number = 15): Promise<string> {
-    const phaseEndsAt = new Date(Date.now() + durationSeconds * 1000).toISOString();
+  // 3. Host bắt đầu game hoặc bắt đầu vòng cược mới bằng RPC an toàn, hiệu năng cao
+  async startNewRound(roomId: string, durationSeconds: number = 15): Promise<Round> {
+    console.log('[gameService.startNewRound] Bắt đầu ván mới qua RPC:', { roomId, durationSeconds });
 
-    // 1. Tạo ván cược mới ở trạng thái 'betting'
-    const { data: newRound, error: createErr } = await supabase
-      .from('rounds')
-      .insert({
-        room_id: roomId,
-        phase: 'betting',
-        status: 'active',
-        phase_ends_at: phaseEndsAt
-      })
-      .select()
-      .single();
+    const { data, error } = await supabase.rpc('start_new_round', {
+      p_room_id: roomId,
+      p_bet_duration: durationSeconds
+    });
 
-    if (createErr) throw createErr;
+    if (error) {
+      console.error('[gameService.startNewRound] LỖI bắt đầu ván mới qua RPC:', error);
+      throw error;
+    }
 
-    // 2. Cập nhật current_round_id trong phòng chơi
-    const { error: updateErr } = await supabase
-      .from('rooms')
-      .update({
-        status: 'playing',
-        current_round_id: newRound.id
-      })
-      .eq('id', roomId);
-
-    if (updateErr) throw updateErr;
-
-    return newRound.id;
+    console.log('[gameService.startNewRound] Bắt đầu ván mới qua RPC thành công:', data);
+    return data as Round;
   },
 
   // 4. Gọi RPC settle_round để sinh kết quả ngẫu nhiên và tính xu

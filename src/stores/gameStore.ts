@@ -56,6 +56,12 @@ export const useGameStore = create<GameState>((set, get) => ({
   setRoundState: (round) => {
     const prevRound = get().currentRound;
     
+    // Nếu có vòng chơi cũ và ID vòng chơi mới khác hoàn toàn, chứng tỏ đã qua ván mới
+    const isNewRound = prevRound && prevRound.id !== round.id;
+    if (isNewRound) {
+      set({ bets: [] });
+    }
+    
     // Nếu phase thay đổi, ta kích hoạt animation tương ứng ở client
     if (prevRound && prevRound.phase !== round.phase) {
       if (round.phase === 'shake') {

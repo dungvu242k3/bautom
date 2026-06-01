@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/authStore';
 import { useRoomStore } from '@/stores/roomStore';
@@ -19,6 +19,9 @@ import { formatCoin } from '@/utils/formatCoin';
 import { BET_CHIPS } from '@/utils/constants';
 import { ArrowLeft, MessageSquare, Users, ShieldAlert, Sparkles, Trophy } from 'lucide-react';
 import { AnimalType } from '@/types/game.types';
+
+// Biến đếm thời gian dọn dẹp phòng toàn cục chia sẻ giữa các lượt mount (Strict Mode remount)
+let globalCleanupTimer: any = null;
 
 export const GameRoomPage: React.FC = () => {
   const { roomId } = useParams<{ roomId: string }>();
@@ -46,18 +49,23 @@ export const GameRoomPage: React.FC = () => {
   const [activeChip, setActiveChip] = useState<number>(50);
   const [loading, setLoading] = useState(true);
   const [confirming, setConfirming] = useState(false);
+  const [startingRound, setStartingRound] = useState(false);
   const [mobileTab, setMobileTab] = useState<'board' | 'players' | 'chat'>('board');
 
   // 1. Kết nối Supabase Realtime Channels tự động đồng bộ dữ liệu
   useGameRealtime(roomId || '');
 
-  // 2. Đồng bộ đếm ngược giây chuẩn xác khớp với server
-  const timeLeft = useCountdown(currentRound?.phase_ends_at, () => {
-    // Khi hết giờ, nếu là host, ta có quyền trigger chuyển phase tự động trên database
-    if (activeRoom && players.find(p => p.user_id === user?.id)?.is_host && currentRound) {
-      handleHostLoopTrigger();
+  // 2. Đồng bộ đếm ngược giây chuẩn xác khớp với server (hiệu chỉnh đồng hồ chống lệch giờ)
+  const timeLeft = useCountdown(
+    currentRound?.phase_ends_at,
+    currentRound?.phase_started_at,
+    () => {
+      // Khi hết giờ, nếu là host, ta có quyền trigger chuyển phase tự động trên database
+      if (activeRoom && players.find(p => p.user_id === user?.id)?.is_host && currentRound) {
+        handleHostLoopTrigger();
+      }
     }
-  });
+  );
 
   // Nạp thông tin phòng cược
   const loadRoom = async () => {
@@ -89,25 +97,56 @@ export const GameRoomPage: React.FC = () => {
         }
       }
 
-      // Lấy lịch sử chat
-      const { data: chatsData } = await supabase
+      // Lấy lịch sử chat (tối ưu hóa JOIN tránh N+1 gây treo/chậm phòng)
+      const { data: chatsData, error: chatErr } = await supabase
         .from('chat_messages')
-        .select('*')
+        .select(`
+          id,
+          room_id,
+          user_id,
+          message,
+          created_at,
+          users (
+            username
+          )
+        `)
         .eq('room_id', roomId)
         .order('created_at', { ascending: true })
         .limit(30);
 
-      if (chatsData) {
-        // Hydrate username
-        const formattedChats = await Promise.all(chatsData.map(async (c: any) => {
-          const { data: userData } = await supabase
-            .from('users')
-            .select('username')
-            .eq('id', c.user_id)
-            .single();
-          return { ...c, username: userData?.username || 'Vô danh' };
+      if (!chatErr && chatsData) {
+        const formattedChats = (chatsData as any[]).map((c) => ({
+          id: c.id,
+          room_id: c.room_id,
+          user_id: c.user_id,
+          message: c.message,
+          created_at: c.created_at,
+          username: c.users?.username || 'Vô danh'
         }));
         setChatMessages(formattedChats);
+      } else {
+        // Fallback: Nếu join bị lỗi do phân quyền/schema, lấy thô và dùng 1 query IN duy nhất
+        const { data: rawChats } = await supabase
+          .from('chat_messages')
+          .select('*')
+          .eq('room_id', roomId)
+          .order('created_at', { ascending: true })
+          .limit(30);
+          
+        if (rawChats) {
+          const userIds = Array.from(new Set(rawChats.map(c => c.user_id)));
+          const { data: usersList } = await supabase
+            .from('users')
+            .select('id, username')
+            .in('id', userIds);
+            
+          const userMap = new Map((usersList || []).map(u => [u.id, u.username]));
+          const formattedChats = rawChats.map(c => ({
+            ...c,
+            username: userMap.get(c.user_id) || 'Vô danh'
+          }));
+          setChatMessages(formattedChats);
+        }
       }
       
       setLoading(false);
@@ -119,12 +158,27 @@ export const GameRoomPage: React.FC = () => {
   };
 
   useEffect(() => {
-    loadRoom();
+    // Nếu có timer dọn dẹp cũ đang chạy (do Strict Mode remount nhanh), hủy bỏ nó để giữ lại phòng
+    if (globalCleanupTimer) {
+      console.log('[GameRoomPage] Phát hiện Strict Mode remount nhanh, hủy bỏ việc rời phòng cũ.');
+      clearTimeout(globalCleanupTimer);
+      globalCleanupTimer = null;
+    } else {
+      loadRoom();
+    }
+
     return () => {
-      // Khi rời phòng cược, dọn dẹp bộ nhớ store và rời Supabase Channel
-      if (roomId) {
-        roomService.leaveRoom(roomId);
-      }
+      // Khi component unmount, lên lịch rời phòng sau 1 giây.
+      // Nếu là unmount thật sự (chuyển trang), timer sẽ chạy và rời phòng.
+      // Nếu là Strict Mode remount nhanh, timer sẽ bị hủy bỏ ở lần chạy tiếp theo.
+      globalCleanupTimer = setTimeout(() => {
+        if (roomId) {
+          console.log('[GameRoomPage] Đang thực hiện rời phòng sau thời gian trì hoãn...');
+          roomService.leaveRoom(roomId);
+        }
+        globalCleanupTimer = null;
+      }, 1000);
+
       setActiveRoom(null);
       setPlayers([]);
       resetAnimationState();
@@ -133,6 +187,55 @@ export const GameRoomPage: React.FC = () => {
 
   // Kiểm tra host hiện tại
   const isHost = players.find(p => p.user_id === user?.id)?.is_host || false;
+
+  const getStartRoundDebugContext = (action: 'start' | 'next') => ({
+    action,
+    roomId,
+    hasActiveRoom: Boolean(activeRoom),
+    activeRoom: activeRoom
+      ? {
+          id: activeRoom.id,
+          status: activeRoom.status,
+          current_round_id: activeRoom.current_round_id,
+          bet_duration: activeRoom.bet_duration,
+          created_by: activeRoom.created_by
+        }
+      : null,
+    currentRound: currentRound
+      ? {
+          id: currentRound.id,
+          phase: currentRound.phase,
+          status: currentRound.status,
+          phase_ends_at: currentRound.phase_ends_at
+        }
+      : null,
+    userId: user?.id,
+    isHost,
+    playersCount: players.length,
+    hostPlayer: players.find(p => p.user_id === user?.id) || null,
+    startingRound,
+    timestamp: new Date().toISOString()
+  });
+
+  useEffect(() => {
+    console.log('[GameRoomPage.startRoundButtonState]', {
+      roomId,
+      isHost,
+      phase: currentRound?.phase,
+      roundStatus: currentRound?.status,
+      playersCount: players.length,
+      disabled: players.length < 1 || startingRound,
+      visibleStartButton: Boolean(isHost && currentRound?.phase === 'waiting'),
+      visibleNextButton: Boolean(isHost && currentRound?.status === 'finished')
+    });
+  }, [
+    roomId,
+    isHost,
+    currentRound?.phase,
+    currentRound?.status,
+    players.length,
+    startingRound
+  ]);
 
   // Lắp máy trạng thái Game Loop (Chỉ Host điều khiển để chuyển tiếp phase tự động ở client nếu chưa bật server Edge Functions)
   const handleHostLoopTrigger = async () => {
@@ -156,22 +259,74 @@ export const GameRoomPage: React.FC = () => {
 
   // Host bấm bắt đầu ván đấu mới khi ở trạng thái waiting
   const handleStartGame = async () => {
-    if (!roomId || !activeRoom) return;
+    console.log('[GameRoomPage.handleStartGame] click', getStartRoundDebugContext('start'));
+    if (startingRound) {
+      console.warn('[GameRoomPage.handleStartGame] ignored because a round is already starting');
+      return;
+    }
+    if (!roomId || !activeRoom) {
+      console.warn('[GameRoomPage.handleStartGame] missing required state', getStartRoundDebugContext('start'));
+      return;
+    }
     try {
-      await gameService.startNewRound(roomId, activeRoom.bet_duration);
+      setStartingRound(true);
+      const newRound = await gameService.startNewRound(roomId, activeRoom.bet_duration);
+      console.log('[GameRoomPage.handleStartGame] success', {
+        roundId: newRound.id,
+        phase: newRound.phase,
+        status: newRound.status
+      });
+      setRoundState(newRound);
+      setActiveRoom({
+        ...activeRoom,
+        status: 'playing',
+        current_round_id: newRound.id
+      });
       clearLocalBets();
+      setStartingRound(false);
     } catch (err: any) {
+      console.error('[GameRoomPage.handleStartGame] failed', {
+        context: getStartRoundDebugContext('start'),
+        error: err
+      });
+      setStartingRound(false);
       alert('Lỗi khởi động ván mới: ' + err.message);
     }
   };
 
   // Host bấm chuyển ván mới tiếp theo sau khi đã xem kết quả
   const handleNextRound = async () => {
-    if (!roomId || !activeRoom) return;
+    console.log('[GameRoomPage.handleNextRound] click', getStartRoundDebugContext('next'));
+    if (startingRound) {
+      console.warn('[GameRoomPage.handleNextRound] ignored because a round is already starting');
+      return;
+    }
+    if (!roomId || !activeRoom) {
+      console.warn('[GameRoomPage.handleNextRound] missing required state', getStartRoundDebugContext('next'));
+      return;
+    }
     try {
-      await gameService.startNewRound(roomId, activeRoom.bet_duration);
+      setStartingRound(true);
+      const newRound = await gameService.startNewRound(roomId, activeRoom.bet_duration);
+      console.log('[GameRoomPage.handleNextRound] success', {
+        roundId: newRound.id,
+        phase: newRound.phase,
+        status: newRound.status
+      });
+      setRoundState(newRound);
+      setActiveRoom({
+        ...activeRoom,
+        status: 'playing',
+        current_round_id: newRound.id
+      });
       clearLocalBets();
+      setStartingRound(false);
     } catch (err: any) {
+      console.error('[GameRoomPage.handleNextRound] failed', {
+        context: getStartRoundDebugContext('next'),
+        error: err
+      });
+      setStartingRound(false);
       alert('Lỗi tạo ván mới: ' + err.message);
     }
   };
@@ -285,7 +440,12 @@ export const GameRoomPage: React.FC = () => {
                 <h4 className="text-sm font-extrabold text-amber-400 font-heading">BẠN LÀ CHỦ PHÒNG CƯỢC</h4>
                 <p className="text-xs text-slate-400 mt-1">Đã có {players.length} người tham gia. Hãy bấm Bắt đầu để vào ván cược!</p>
               </div>
-              <Button variant="gold" onClick={handleStartGame} disabled={players.length < 2}>
+              <Button
+                variant="gold"
+                onClick={handleStartGame}
+                disabled={players.length < 1 || startingRound}
+                loading={startingRound}
+              >
                 Bắt đầu ván mới
               </Button>
             </div>
@@ -298,7 +458,12 @@ export const GameRoomPage: React.FC = () => {
                 <h4 className="text-sm font-extrabold text-emerald-400 font-heading">VÁN ĐẤU ĐÃ KẾT THÚC</h4>
                 <p className="text-xs text-slate-400 mt-1">Hệ thống đã trả xu thưởng thắng cược. Nhấp để qua ván mới!</p>
               </div>
-              <Button variant="gold" onClick={handleNextRound}>
+              <Button
+                variant="gold"
+                onClick={handleNextRound}
+                disabled={startingRound}
+                loading={startingRound}
+              >
                 Tiếp tục ván mới
               </Button>
             </div>
