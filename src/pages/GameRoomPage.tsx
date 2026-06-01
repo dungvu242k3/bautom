@@ -163,9 +163,10 @@ export const GameRoomPage: React.FC = () => {
       console.log('[GameRoomPage] Phát hiện Strict Mode remount nhanh, hủy bỏ việc rời phòng cũ.');
       clearTimeout(globalCleanupTimer);
       globalCleanupTimer = null;
-    } else {
-      loadRoom();
     }
+    
+    // Luôn nạp thông tin phòng chơi khi component mount thực tế
+    loadRoom();
 
     return () => {
       // Khi component unmount, lên lịch rời phòng sau 1 giây.
