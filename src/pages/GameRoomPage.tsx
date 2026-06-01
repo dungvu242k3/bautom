@@ -20,8 +20,6 @@ import { BET_CHIPS } from '@/utils/constants';
 import { ArrowLeft, MessageSquare, Users, ShieldAlert, Sparkles, Trophy } from 'lucide-react';
 import { AnimalType } from '@/types/game.types';
 
-// Biến đếm thời gian dọn dẹp phòng toàn cục chia sẻ giữa các lượt mount (Strict Mode remount)
-let globalCleanupTimer: any = null;
 
 export const GameRoomPage: React.FC = () => {
   const { roomId } = useParams<{ roomId: string }>();
@@ -158,28 +156,19 @@ export const GameRoomPage: React.FC = () => {
   };
 
   useEffect(() => {
-    // Nếu có timer dọn dẹp cũ đang chạy (do Strict Mode remount nhanh), hủy bỏ nó để giữ lại phòng
-    if (globalCleanupTimer) {
-      console.log('[GameRoomPage] Phát hiện Strict Mode remount nhanh, hủy bỏ việc rời phòng cũ.');
-      clearTimeout(globalCleanupTimer);
-      globalCleanupTimer = null;
-    }
-    
     // Luôn nạp thông tin phòng chơi khi component mount thực tế
     loadRoom();
 
-    return () => {
-      // Khi component unmount, lên lịch rời phòng sau 1 giây.
-      // Nếu là unmount thật sự (chuyển trang), timer sẽ chạy và rời phòng.
-      // Nếu là Strict Mode remount nhanh, timer sẽ bị hủy bỏ ở lần chạy tiếp theo.
-      globalCleanupTimer = setTimeout(() => {
-        if (roomId) {
-          console.log('[GameRoomPage] Đang thực hiện rời phòng sau thời gian trì hoãn...');
-          roomService.leaveRoom(roomId);
-        }
-        globalCleanupTimer = null;
-      }, 1000);
+    // Tự động dọn dẹp khi tắt trình duyệt / tắt tab
+    const handleBeforeUnload = () => {
+      if (roomId) {
+        roomService.leaveRoom(roomId);
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
 
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
       setActiveRoom(null);
       setPlayers([]);
       resetAnimationState();
@@ -385,7 +374,20 @@ export const GameRoomPage: React.FC = () => {
       
       {/* Top Navigation Bar */}
       <div className="w-full bg-slate-900/60 border-b border-slate-900/80 px-4 py-3 flex items-center justify-between z-30 sticky top-0 backdrop-blur-md">
-        <Button variant="ghost" onClick={() => navigate('/lobby')} className="p-2 gap-2 text-slate-300">
+        <Button 
+          variant="ghost" 
+          onClick={async () => {
+            if (roomId) {
+              try {
+                await roomService.leaveRoom(roomId);
+              } catch (err) {
+                console.error('Lỗi khi rời phòng:', err);
+              }
+            }
+            navigate('/lobby');
+          }} 
+          className="p-2 gap-2 text-slate-300"
+        >
           <ArrowLeft size={16} />
           <span className="hidden sm:inline">Rời phòng</span>
         </Button>

@@ -77,14 +77,14 @@ export const roomService = {
       throw new Error('Phòng cược đã đầy người chơi');
     }
 
-    // Insert người chơi mới vào phòng cược
+    // Insert người chơi mới vào phòng cược (Giữ nguyên quyền Host nếu người dùng hiện tại là người tạo phòng)
     console.log('[roomService.joinRoom] Bước 4 - Đang đăng ký người chơi vào bảng room_players...');
     const { error: joinErr } = await supabase
       .from('room_players')
       .upsert({
         room_id: room.id,
         user_id: user.id,
-        is_host: false,
+        is_host: room.created_by === user.id,
         is_online: true
       }, { onConflict: 'room_id,user_id' });
 

@@ -38,7 +38,7 @@ export const useRoomStore = create<RoomState>((set) => ({
 
   updatePlayerStatus: (userId, isOnline) => set((state) => ({
     players: state.players.map((p) => 
-      p.user_id === userId ? { ...p, isOnline } : p
+      p.user_id === userId ? { ...p, is_online: isOnline } : p
     )
   })),
 
