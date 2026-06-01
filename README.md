@@ -1,73 +1,50 @@
-# React + TypeScript + Vite
+# Bầu Cua Arena
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React + Supabase realtime game for Bầu Cua Tôm Cá.
 
-Currently, two official plugins are available:
+## Features
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- Username/password login and register, no real Gmail required.
+- Lobby with public/private rooms and room code join.
+- Room setup: min bet, max bet, max players, betting duration.
+- Realtime players, room state, bets, wallet balance, and chat.
+- Server-authoritative wallet, bet, lock, reveal, and payout logic through Supabase RPC.
+- Fixed 3 second opening phase.
+- RLS keeps wallets and transaction history private.
+- Unit tests for game payout and validation rules.
 
-## React Compiler
+## Local Setup
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+1. Copy `.env.example` to `.env`.
+2. Fill `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`.
+3. Run `supabase/schema.sql` in the Supabase SQL Editor.
+4. In Supabase Auth, use Email provider and disable email confirmation for the internal `@baucua.local` aliases.
+5. Start locally:
 
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm install
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## Deploy on Vercel
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+Set these environment variables on Vercel:
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+VITE_SUPABASE_URL
+VITE_SUPABASE_ANON_KEY
 ```
+
+Build command: `npm run build`
+
+Output directory: `dist`
+
+## Quality
+
+```bash
+npm run lint
+npm run test
+npm run build
+```
+
+The backend trust boundary is in `supabase/schema.sql`: clients cannot update wallets, create payouts, or set dice directly. Those flows are handled by RPC functions with row locks and RLS.
