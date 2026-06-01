@@ -281,7 +281,7 @@ begin
       instance_id,
       email,
       encrypted_password,
-      email_confirmed_at,
+      email_confirmed_at, -- LƯU Ý: confirmed_at là generated column nên không được ghi đè trực tiếp, chỉ cần email_confirmed_at là đủ!
       aud,
       role,
       raw_app_meta_data,
@@ -319,7 +319,12 @@ begin
 
     raise notice 'Tài khoản admin đã được khởi tạo thành công với mật khẩu: %', v_admin_password;
   else
-    raise notice 'Tài khoản admin với email % đã tồn tại!', v_admin_email;
+    -- Nếu tài khoản đã tồn tại, chỉ cần đảm bảo email_confirmed_at đã được kích hoạt
+    update auth.users 
+    set email_confirmed_at = now() 
+    where email = v_admin_email;
+    
+    raise notice 'Tài khoản admin với email % đã tồn tại! Đã cập nhật trạng thái email_confirmed.', v_admin_email;
   end if;
 end;
 $$;

@@ -58,7 +58,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         console.log('[authStore] Tự tạo row users cho:', userId, username);
         const { data: newUser, error: insertErr } = await supabase
           .from('users')
-          .insert({ id: userId, email, username })
+          .upsert({ id: userId, email, username }, { onConflict: 'id' })
           .select()
           .single();
         
@@ -83,7 +83,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         console.log('[authStore] Tự tạo row profiles cho:', userId);
         const { data: newProfile, error: insertErr } = await supabase
           .from('profiles')
-          .insert({ user_id: userId, display_name: userData.username })
+          .upsert({ user_id: userId, display_name: userData.username }, { onConflict: 'user_id' })
           .select()
           .single();
         
@@ -108,7 +108,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         console.log('[authStore] Tự tạo row wallets cho:', userId);
         const { data: newWallet, error: insertErr } = await supabase
           .from('wallets')
-          .insert({ user_id: userId, balance: 1000 })
+          .upsert({ user_id: userId, balance: 1000 }, { onConflict: 'user_id' })
           .select()
           .single();
         
