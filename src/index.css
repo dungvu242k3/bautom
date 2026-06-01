@@ -1,0 +1,113 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", system-ui, sans-serif;
+  --font-heading: "Outfit", sans-serif;
+  
+  --color-crimson-50: #fef2f2;
+  --color-crimson-100: #fee2e2;
+  --color-crimson-200: #fecaca;
+  --color-crimson-300: #fca5a5;
+  --color-crimson-400: #f87171;
+  --color-crimson-500: #ef4444;
+  --color-crimson-600: #dc2626;
+  --color-crimson-700: #b91c1c;
+  --color-crimson-800: #991b1b;
+  --color-crimson-900: #7f1d1d;
+  --color-crimson-950: #450a0a;
+
+  --animate-shake-bowl: shake-bowl 0.5s ease-in-out infinite;
+  --animate-dice-roll: dice-roll 0.8s cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
+  --animate-gold-glow: gold-glow 2s infinite alternate;
+  --animate-pulse-subtle: pulse-subtle 2s infinite ease-in-out;
+
+  @keyframes shake-bowl {
+    0%, 100% { transform: rotate(0deg) translate(0px, 0px); }
+    10% { transform: rotate(-8deg) translate(-5px, -3px); }
+    20% { transform: rotate(8deg) translate(5px, 3px); }
+    30% { transform: rotate(-10deg) translate(-6px, 2px); }
+    40% { transform: rotate(10deg) translate(6px, -2px); }
+    50% { transform: rotate(-8deg) translate(-5px, 3px); }
+    60% { transform: rotate(8deg) translate(5px, -3px); }
+    70% { transform: rotate(-5deg) translate(-3px, 1px); }
+    80% { transform: rotate(5deg) translate(3px, -1px); }
+    90% { transform: rotate(-2deg) translate(-1px, 0px); }
+  }
+
+  @keyframes dice-roll {
+    0% { transform: scale(0.2) rotate(0deg) translateY(-60px); opacity: 0.3; filter: blur(4px); }
+    60% { transform: scale(1.15) rotate(360deg) translateY(10px); opacity: 0.9; filter: blur(1px); }
+    100% { transform: scale(1) rotate(720deg) translateY(0px); opacity: 1; filter: blur(0px); }
+  }
+
+  @keyframes gold-glow {
+    0% { box-shadow: 0 0 4px rgba(245, 158, 11, 0.2), inset 0 0 4px rgba(245, 158, 11, 0.1); }
+    100% { box-shadow: 0 0 16px rgba(245, 158, 11, 0.6), inset 0 0 10px rgba(245, 158, 11, 0.3); border-color: #fbbf24; }
+  }
+
+  @keyframes pulse-subtle {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.85; transform: scale(0.98); }
+  }
+}
+
+/* Glassmorphism Styles */
+.glass-panel {
+  background: rgba(15, 23, 42, 0.75);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.glass-card {
+  background: rgba(30, 41, 59, 0.5);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  transition: all 0.2s ease-in-out;
+}
+
+.glass-card:hover {
+  background: rgba(30, 41, 59, 0.7);
+  border-color: rgba(245, 158, 11, 0.3);
+}
+
+/* Hide scrollbar for Chrome, Safari and Opera */
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+/* Hide scrollbar for IE, Edge and Firefox */
+.scrollbar-none {
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;  /* Firefox */
+}
+
+/* Bàn cược Bau Cua Stylings */
+body {
+  margin: 0;
+  padding: 0;
+  font-family: var(--font-sans);
+  background-color: #020617;
+  color: #f8fafc;
+  overflow-x: hidden;
+  min-height: 100svh;
+}
+
+#root {
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Animation mượt cho chuyển cảnh */
+.page-transition-enter {
+  opacity: 0;
+  transform: scale(0.98);
+}
+.page-transition-enter-active {
+  opacity: 1;
+  transform: scale(1);
+  transition: opacity 250ms ease-out, transform 250ms ease-out;
+}
