@@ -109,7 +109,7 @@ create table public.bets (
 create table public.coin_transactions (
   id uuid primary key default gen_random_uuid(),
   user_id uuid references public.users(id) on delete cascade not null,
-  round_id uuid references public.rounds(id),
+  round_id uuid references public.rounds(id) on delete set null,
   type text not null check (type in ('initial_bonus', 'place_bet', 'refund_bet', 'win_reward')),
   amount bigint not null, -- Số xu thay đổi (âm nếu trừ, dương nếu cộng)
   balance_before bigint not null,

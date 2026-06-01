@@ -526,3 +526,19 @@ begin
   );
 end;
 $$;
+
+-- =========================================================================
+-- 14. MIGRATION: SỬA LỖI KHÔNG XÓA ĐƯỢC PHÒNG CHƠI DO RÀNG BUỘC KHÓA NGOẠI
+-- =========================================================================
+-- Hướng dẫn: Chạy khối lệnh dưới đây trên SQL Editor của Supabase.
+-- Lệnh này đổi hành vi xóa của khóa ngoại coin_transactions_round_id_fkey sang ON DELETE SET NULL.
+-- Việc này giúp khi phòng/ván chơi bị xóa (do không còn ai chơi), lịch sử giao dịch xu vẫn được giữ lại 
+-- nhưng liên kết round_id được set về NULL, tránh gây lỗi khóa ngoại và treo dữ liệu.
+alter table public.coin_transactions 
+  drop constraint if exists coin_transactions_round_id_fkey;
+
+alter table public.coin_transactions 
+  add constraint coin_transactions_round_id_fkey 
+  foreign key (round_id) 
+  references public.rounds(id) 
+  on delete set null;
